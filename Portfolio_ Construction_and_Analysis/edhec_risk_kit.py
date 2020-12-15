@@ -1,6 +1,7 @@
 import pandas as pd
 import numpy as np
 import scipy
+import scipy.stats
 
 def drawdown(return_series: pd.Series):
     """
@@ -44,6 +45,16 @@ def get_hfi_returns():
     hfi = hfi/100
     hfi.index = hfi.index.to_period('M')
     return hfi
+
+def get_ind_returns():
+    '''
+    Load and format the Ken French 30 Industry Portfolios Value Weighted Monthly Returns
+    '''
+    ind = pd.read_csv('data/ind30_m_vw_rets.csv', header=0, index_col=0, parse_dates=True)/100
+    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
+    ind.columns = ind.columns.str.strip()
+    return ind
+
 
 def semideviation(r):
     """
@@ -133,4 +144,29 @@ def cvar_historic(r, level=5):
     else:
         raise TypeError("Expected r to be Series or DataFrame")
 
+def annualize_rets(r, periods_per_year):
+    '''
+    Annualize the returns of a set of returns
+    '''
+    compounded_growth = (1+r).prod()
+    n_periods = r.shape[0]
+    return compounded_growth**(periods_per_year/n_periods)-1
 
+def annualize_vol(r, periods_per_year):
+    '''
+    Annualize the volatility of a set of returns
+    We should infer the periods per year
+    but that is currently left as ab exercise to the reader
+    '''
+    return r.std()*(periods_per_year**0.5)
+
+def sharpe_ratio(r, riskfree_rate, periods_per_year):
+    '''
+    Computes the annualized sharpe ratio of a set of returns
+    '''
+    # convert the annual riskfree rate to per period
+    rf_per_period = (1+riskfree_rate)**(1/periods_per_year) - 1
+    excess_ret = r - rf_per_period
+    ann_ex_ret = annualize_rets(excess_ret, periods_per_year)
+    ann_vol = annualize_vol(r, periods_per_year)
+    return ann_ex_ret/ann_vol
