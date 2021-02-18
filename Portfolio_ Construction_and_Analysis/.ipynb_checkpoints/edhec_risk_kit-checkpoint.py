@@ -56,6 +56,23 @@ def get_ind_returns():
     ind.columns = ind.columns.str.strip()
     return ind
 
+def get_ind_size():
+    '''
+    Load and format the Ken French 30 Industry Portfolios Market Size
+    '''
+    ind = pd.read_csv('data/ind30_m_size.csv', header=0, index_col=0, parse_dates=True)
+    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
+    ind.columns = ind.columns.str.strip()
+    return ind
+
+def get_ind_nfirms():
+    '''
+    Load and format the Ken French 30 Industry Portfolios number of firms
+    '''
+    ind = pd.read_csv('data/ind30_m_nfirms.csv', header=0, index_col=0, parse_dates=True)
+    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
+    ind.columns = ind.columns.str.strip()
+    return ind
 
 def semideviation(r):
     """
@@ -232,10 +249,53 @@ def optimal_weights(n_points, er, cov):
     target_rs = np.linspace(er.min(), er.max(), n_points)
     weights = [minimize_vol(target_return, er, cov) for target_return in target_rs]
     return weights
-    
-def plot_ef(n_points, er, cov, style='.-'):
+   
+def msr(riskfree_rate, er, cov):
     '''
-    Plots the N-asset efficient frontier
+    Returns the weights of the portfolio that gives you the maximum sharpe ratio
+    given the riskfree rate, expected returns and a covariance matrix
+    '''
+    n = er.shape[0]
+    init_guess = np.repeat(1/n, n)
+    # set the bounds
+    bounds = ((0.0, 1.0),)*n # make n copies of tuples (0.0, 1.0)
+    # set the constraints
+    weights_sum_to_1 = {
+        'type': 'eq',
+        'fun': lambda weights: np.sum(weights) - 1
+    }
+    
+    def neg_sharpe_ratio(weights, riskfree_rate, er, cov):
+        '''
+        Returns the negative of the sharpe ratio, given weights
+        '''
+        r = portfolio_return(weights, er)
+        vol = portfolio_vol(weights, cov)
+        return -(r - riskfree_rate) / vol
+        
+    results = minimize(neg_sharpe_ratio, init_guess,
+                       args=(riskfree_rate, er, cov,), method='SLSQP',
+                       options={'disp': False},
+                       constraints=(weights_sum_to_1),
+                       bounds=bounds
+                      )
+    return results.x
+
+def gmv(cov):
+    '''
+    Returns the weights of the Global Minimum Volatility portfolios
+    given the covariance matrix
+    '''
+    n = cov.shape[0]
+    return msr(0.1, np.repeat(1, n), cov)
+    '''
+    Because to calculate the GMV, neither the riskfree rate nor the expected returns are required,
+    therefore we just put some placeholder numbers in there. In fact, it's only the covariance matrix that matters.
+    '''
+
+def plot_ef(n_points, er, cov, show_cml=False, style='.-', riskfree_rate=0, show_ew=False, show_gmv=False):
+    '''
+    Plots the multi-asset efficient frontier
     '''
     weights = optimal_weights(n_points, er, cov)
     rets = [portfolio_return(w, er) for w in weights]
@@ -244,4 +304,30 @@ def plot_ef(n_points, er, cov, style='.-'):
         'Returns': rets, 
         'Volatility': vols
         })
-    return ef.plot.line(x='Volatility', y='Returns', style=style)
+    ax = ef.plot.line(x='Volatility', y='Returns', style=style)
+    if show_ew: # plot the equally weighted portfolios
+        n = er.shape[0]
+        w_ew = np.repeat(1/n, n)
+        r_ew = portfolio_return(w_ew, er)
+        vol_ew = portfolio_vol(w_ew, cov)
+        # display Equally Weighted portfolios
+        ax.plot([vol_ew], [r_ew], color='goldenrod', marker='o', markersize=10)
+    if show_gmv: # plot the 
+        w_gmv = gmv(cov)
+        r_gmv = portfolio_return(w_gmv, er)
+        vol_gmv = portfolio_vol(w_gmv, cov)
+        # display Equally Weighted portfolios
+        ax.plot([vol_gmv], [r_gmv], color='midnightblue', marker='o', markersize=10)
+    if show_cml:
+        ax.set_xlim(left = 0)
+        w_msr = msr(riskfree_rate, er, cov)
+        r_msr = portfolio_return(w_msr, er)
+        vol_msr = portfolio_vol(w_msr, cov)
+        # Add Capital Market Line
+        cml_x = [0, vol_msr]
+        cml_y = [riskfree_rate, r_msr]
+        ax.plot(cml_x, cml_y, color='green', marker='o', linestyle='dashed', markersize=12, linewidth=2)
+    return ax
+
+
+
