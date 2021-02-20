@@ -3,7 +3,28 @@ import numpy as np
 import scipy
 import scipy.stats
 from scipy.optimize import minimize
+import akshare as ak
 
+def get_mf_values(m_funds, indicator="累计净值走势"):
+    '''
+    Load and format the list of mutual fund values from Akshare
+    Return a Dataframe with each column being the value time series of each mutual fund
+    '''
+    m_fund_values = pd.DataFrame()
+    for m_fund in m_funds:
+        # get a single mutual fund value
+        m_fund_value = ak.fund_em_open_fund_info(m_fund, indicator)
+        m_fund_value.reset_index(drop=True, inplace=False).set_index('净值日期')
+        m_fund_value.index = pd.to_datetime(m_fund_value['净值日期'], format="%Y-%m-%d")
+        # drop the original column "净值日期"
+        m_fund_value = m_fund_value.drop(m_fund_value.columns[[0]], axis = 1)
+        m_fund_value.rename(columns={'累计净值': m_fund}, inplace=True)
+        
+        # merge the single mutual fund value into the existing value Dataframe
+        m_fund_values = pd.concat([m_fund_values, m_fund_value], axis=1)
+        
+    return m_fund_values
+    
 def drawdown(return_series: pd.Series):
     """
     Takes a time series of asset returns
