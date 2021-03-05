@@ -449,20 +449,25 @@ def gbm(n_years = 10, n_scenarios=1000, mu=0.07, sigma=0.15, steps_per_year=12, 
     return ret_val
 
 def discount(t, r):
-    '''
-    Compute the price of a pure discount bond that pays a dollar at time t, given interest rate r
-    '''
-    return (1+r)**(-t)
+    """
+    Compute the price of a pure discount bond that pays a dollar at time period t
+    and r is the per-period interest rate
+    returns a |t| x |r| Series or DataFrame
+    r can be a float, Series or DataFrame
+    returns a DataFrame indexed by t
+    """
+    discounts = pd.DataFrame([(r+1)**-i for i in t])
+    discounts.index = t
+    return discounts
 
-def pv(l, r):
-    '''
-    Compute the present value of a sequence of liabilities
-    l is indexed by the time , and the value are the amounts of each liability
-    returns the present value of the sequence
-    '''
-    dates = l.index
+def pv(flows, r):
+    """
+    Compute the present value of a sequence of cash flows given by the time (as an index) and amounts
+    r can be a scalar, or a Series or DataFrame with the number of rows matching the num of rows in flows
+    """
+    dates = flows.index
     discounts = discount(dates, r)
-    return (discounts*l).sum()
+    return discounts.multiply(flows, axis='rows').sum()
 
 def funding_ratio(assets, liabilities, r):
     '''
