@@ -5,6 +5,7 @@ import scipy.stats
 import math
 from scipy.stats import norm
 from scipy.optimize import minimize
+import akshare as ak
 
 def get_mf_values(m_funds, indicator="累计净值走势"):
     '''
