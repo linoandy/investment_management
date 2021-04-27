@@ -2,9 +2,10 @@ import pandas as pd
 import numpy as np
 import scipy
 import scipy.stats
+import math
+from scipy.stats import norm
 from scipy.optimize import minimize
 import akshare as ak
-import math
 
 def get_mf_values(m_funds, indicator="累计净值走势"):
     '''
@@ -26,34 +27,24 @@ def get_mf_values(m_funds, indicator="累计净值走势"):
         
     return m_fund_values
     
-def drawdown(return_series: pd.Series):
-    """
-    Takes a time series of asset returns
-    Computes and returns a DataFrame that contains:
-    the wealth index
-    the previous peaks
-    percent drawdowns
-    """
-    wealth_index = 1000*(1+return_series).cumprod()
-    previous_peaks = wealth_index.cummax()
-    drawdowns = (wealth_index - previous_peaks)/previous_peaks
-    
-    return pd.DataFrame({
-        'Wealth': wealth_index,
-        'Peaks': previous_peaks,
-        'Drawdown': drawdowns
-    })
-
 def get_ffme_returns():
     """
     Load the Fama-French Dataset for the returns of the Top and Bottom Deciles by MarketCap
     """
     me_m = pd.read_csv("data/Portfolios_Formed_on_ME_monthly_EW.csv",
-             header=0, index_col=0, na_values=-99.99
-            )
+                       header=0, index_col=0, na_values=-99.99)
     rets = me_m[['Lo 10', 'Hi 10']]
     rets.columns = ['SmallCap', 'LargeCap']
     rets = rets/100
+    rets.index = pd.to_datetime(rets.index, format="%Y%m").to_period('M')
+    return rets
+
+def get_fff_returns():
+    """
+    Load the Fama-French Research Factor Monthly Dataset
+    """
+    rets = pd.read_csv("data/F-F_Research_Data_Factors_m.csv",
+                       header=0, index_col=0, na_values=-99.99)/100
     rets.index = pd.to_datetime(rets.index, format="%Y%m").to_period('M')
     return rets
 
@@ -63,65 +54,81 @@ def get_hfi_returns():
     Load and format the EDHEC Hedge Fund Index Returns
     """
     hfi = pd.read_csv("data/edhec-hedgefundindices.csv",
-             header=0, index_col=0, parse_dates=True
-            )
+                      header=0, index_col=0, parse_dates=True)
     hfi = hfi/100
     hfi.index = hfi.index.to_period('M')
     return hfi
 
-def get_ind_returns():
-    '''
-    Load and format the Ken French 30 Industry Portfolios Value Weighted Monthly Returns
-    '''
-    ind = pd.read_csv('data/ind30_m_vw_rets.csv', header=0, index_col=0, parse_dates=True)/100
+def get_ind_file(filetype, weighting="vw", n_inds=30):
+    """
+    Load and format the Ken French Industry Portfolios files
+    Variant is a tuple of (weighting, size) where:
+        weighting is one of "ew", "vw"
+        number of inds is 30 or 49
+    """    
+    if filetype is "returns":
+        name = f"{weighting}_rets" 
+        divisor = 100
+    elif filetype is "nfirms":
+        name = "nfirms"
+        divisor = 1
+    elif filetype is "size":
+        name = "size"
+        divisor = 1
+    else:
+        raise ValueError(f"filetype must be one of: returns, nfirms, size")
+    
+    ind = pd.read_csv(f"data/ind{n_inds}_m_{name}.csv", header=0, index_col=0, na_values=-99.99)/divisor
     ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
     ind.columns = ind.columns.str.strip()
     return ind
 
-def get_ind_size():
-    '''
-    Load and format the Ken French 30 Industry Portfolios Market Size
-    '''
-    ind = pd.read_csv('data/ind30_m_size.csv', header=0, index_col=0, parse_dates=True)
-    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
-    ind.columns = ind.columns.str.strip()
-    return ind
+def get_ind_returns(weighting="vw", n_inds=30):
+    """
+    Load and format the Ken French Industry Portfolios Monthly Returns
+    """
+    return get_ind_file("returns", weighting=weighting, n_inds=n_inds)
 
-def get_ind_nfirms():
-    '''
-    Load and format the Ken French 30 Industry Portfolios number of firms
-    '''
-    ind = pd.read_csv('data/ind30_m_nfirms.csv', header=0, index_col=0, parse_dates=True)
-    ind.index = pd.to_datetime(ind.index, format="%Y%m").to_period('M')
-    ind.columns = ind.columns.str.strip()
-    return ind
+def get_ind_nfirms(n_inds=30):
+    """
+    Load and format the Ken French 30 Industry Portfolios Average number of Firms
+    """
+    return get_ind_file("nfirms", n_inds=n_inds)
 
-def get_total_market_index_returns():
+def get_ind_size(n_inds=30):
+    """
+    Load and format the Ken French 30 Industry Portfolios Average size (market cap)
+    """
+    return get_ind_file("size", n_inds=n_inds)
+
+
+def get_ind_market_caps(n_inds=30, weights=False):
+    """
+    Load the industry portfolio data and derive the market caps
+    """
+    ind_nfirms = get_ind_nfirms(n_inds=n_inds)
+    ind_size = get_ind_size(n_inds=n_inds)
+    ind_mktcap = ind_nfirms * ind_size
+    if weights:
+        total_mktcap = ind_mktcap.sum(axis=1)
+        ind_capweight = ind_mktcap.divide(total_mktcap, axis="rows")
+        return ind_capweight
+    #else
+    return ind_mktcap
+
+def get_total_market_index_returns(n_inds=30):
     """
     Load the 30 industry portfolio data and derive the returns of a capweighted total market index
     """
-    ind_nfirms = get_ind_nfirms()
-    ind_size = get_ind_size()
-    ind_return = get_ind_returns()
-    ind_mktcap = ind_nfirms * ind_size
-    total_mktcap = ind_mktcap.sum(axis=1)
-    ind_capweight = ind_mktcap.divide(total_mktcap, axis="rows")
+    ind_capweight = get_ind_market_caps(n_inds=n_inds)
+    ind_return = get_ind_returns(weighting="vw", n_inds=n_inds)
     total_market_return = (ind_capweight * ind_return).sum(axis="columns")
     return total_market_return
-
-def semideviation(r):
-    """
-    Returns the semideviation aka negative semideviation of r
-    r must be a Series or a DataFrame
-    """
-    is_negative = r < 0
-    return r[is_negative].std(ddof=0)
-
-
+                         
 def skewness(r):
     """
     Alternative to scipy.stats.skew()
-    Computes the skewness of the supplied Series of the DataFrame
+    Computes the skewness of the supplied Series or DataFrame
     Returns a float or a Series
     """
     demeaned_r = r - r.mean()
@@ -130,10 +137,11 @@ def skewness(r):
     exp = (demeaned_r**3).mean()
     return exp/sigma_r**3
 
+
 def kurtosis(r):
     """
     Alternative to scipy.stats.kurtosis()
-    Computes the kurtosis of the supplied Series of the DataFrame
+    Computes the kurtosis of the supplied Series or DataFrame
     Returns a float or a Series
     """
     demeaned_r = r - r.mean()
@@ -142,14 +150,88 @@ def kurtosis(r):
     exp = (demeaned_r**4).mean()
     return exp/sigma_r**4
 
+
+def compound(r):
+    """
+    returns the result of compounding the set of returns in r
+    """
+    return np.expm1(np.log1p(r).sum())
+
+                         
+def annualize_rets(r, periods_per_year):
+    """
+    Annualizes a set of returns
+    We should infer the periods per year
+    but that is currently left as an exercise
+    to the reader :-)
+    """
+    compounded_growth = (1+r).prod()
+    n_periods = r.shape[0]
+    return compounded_growth**(periods_per_year/n_periods)-1
+
+
+def annualize_vol(r, periods_per_year):
+    """
+    Annualizes the vol of a set of returns
+    We should infer the periods per year
+    but that is currently left as an exercise
+    to the reader :-)
+    """
+    return r.std()*(periods_per_year**0.5)
+
+
+def sharpe_ratio(r, riskfree_rate, periods_per_year):
+    """
+    Computes the annualized sharpe ratio of a set of returns
+    """
+    # convert the annual riskfree rate to per period
+    rf_per_period = (1+riskfree_rate)**(1/periods_per_year)-1
+    excess_ret = r - rf_per_period
+    ann_ex_ret = annualize_rets(excess_ret, periods_per_year)
+    ann_vol = annualize_vol(r, periods_per_year)
+    return ann_ex_ret/ann_vol
+
 def is_normal(r, level=0.01):
     """
-    Applies the Jarque-Bera test to dertermine if a Series is normal or not
-    Test is applied at the 1% confidence level by default
+    Applies the Jarque-Bera test to determine if a Series is normal or not
+    Test is applied at the 1% level by default
     Returns True if the hypothesis of normality is accepted, False otherwise
     """
-    statistic, p_value = scipy.stats.jarque_bera(r)
-    return p_value > level
+    if isinstance(r, pd.DataFrame):
+        return r.aggregate(is_normal)
+    else:
+        statistic, p_value = scipy.stats.jarque_bera(r)
+        return p_value > level
+
+
+def drawdown(return_series: pd.Series):
+    """Takes a time series of asset returns.
+       returns a DataFrame with columns for
+       the wealth index, 
+       the previous peaks, and 
+       the percentage drawdown
+    """
+    wealth_index = 1000*(1+return_series).cumprod()
+    previous_peaks = wealth_index.cummax()
+    drawdowns = (wealth_index - previous_peaks)/previous_peaks
+    return pd.DataFrame({"Wealth": wealth_index, 
+                         "Previous Peak": previous_peaks, 
+                         "Drawdown": drawdowns})
+
+
+def semideviation(r):
+    """
+    Returns the semideviation aka negative semideviation of r
+    r must be a Series or a DataFrame, else raises a TypeError
+    """
+    if isinstance(r, pd.Series):
+        is_negative = r < 0
+        return r[is_negative].std(ddof=0)
+    elif isinstance(r, pd.DataFrame):
+        return r.aggregate(semideviation)
+    else:
+        raise TypeError("Expected r to be a Series or DataFrame")
+
 
 def var_historic(r, level=5):
     """
@@ -162,267 +244,250 @@ def var_historic(r, level=5):
     elif isinstance(r, pd.Series):
         return -np.percentile(r, level)
     else:
-        raise TypeError("Expected r to be Series or DataFrame")
+        raise TypeError("Expected r to be a Series or DataFrame")
+
+
+def cvar_historic(r, level=5):
+    """
+    Computes the Conditional VaR of Series or DataFrame
+    """
+    if isinstance(r, pd.Series):
+        is_beyond = r <= -var_historic(r, level=level)
+        return -r[is_beyond].mean()
+    elif isinstance(r, pd.DataFrame):
+        return r.aggregate(cvar_historic, level=level)
+    else:
+        raise TypeError("Expected r to be a Series or DataFrame")
 
 def var_gaussian(r, level=5, modified=False):
     """
-    Returns the Parametric Gaussian VaR of a Series or DataFrame
-    If 'modified' is True, then the modified VaR is returned,
+    Returns the Parametric Gauusian VaR of a Series or DataFrame
+    If "modified" is True, then the modified VaR is returned,
     using the Cornish-Fisher modification
     """
     # compute the Z score assuming it was Gaussian
-    z = scipy.stats.norm.ppf(level/100)
-
+    z = norm.ppf(level/100)
     if modified:
         # modify the Z score based on observed skewness and kurtosis
         s = skewness(r)
         k = kurtosis(r)
         z = (z +
                 (z**2 - 1)*s/6 +
-                (z**3 - 3*z)*(k-3)/24 -
+                (z**3 -3*z)*(k-3)/24 -
                 (2*z**3 - 5*z)*(s**2)/36
             )
-
     return -(r.mean() + z*r.std(ddof=0))
 
-def cvar_historic(r, level=5):
-    """
-    Computes the Conditional VaR of Series of DataFrame
-    """
-    if isinstance(r, pd.DataFrame):
-        return r.aggregate(cvar_historic, level=level)
-    elif isinstance(r, pd.Series):
-        is_beyond = r <= -var_historic(r, level=level)
-        return -r[is_beyond].mean()
-    else:
-        raise TypeError("Expected r to be Series or DataFrame")
-
-def annualize_rets(r, periods_per_year):
-    '''
-    Annualize the returns of a set of returns
-    '''
-    compounded_growth = (1+r).prod()
-    n_periods = r.shape[0]
-    return compounded_growth**(periods_per_year/n_periods)-1
-
-def annualize_vol(r, periods_per_year):
-    '''
-    Annualize the volatility of a set of returns
-    We should infer the periods per year
-    but that is currently left as ab exercise to the reader
-    '''
-    return r.std()*(periods_per_year**0.5)
-
-def sharpe_ratio(r, riskfree_rate, periods_per_year):
-    '''
-    Computes the annualized sharpe ratio of a set of returns
-    '''
-    # convert the annual riskfree rate to per period
-    rf_per_period = (1+riskfree_rate)**(1/periods_per_year) - 1
-    excess_ret = r - rf_per_period
-    ann_ex_ret = annualize_rets(excess_ret, periods_per_year)
-    ann_vol = annualize_vol(r, periods_per_year)
-    return ann_ex_ret/ann_vol
 
 def portfolio_return(weights, returns):
-    '''
-    Weights -> Returns
-    '''
+    """
+    Computes the return on a portfolio from constituent returns and weights
+    weights are a numpy array or Nx1 matrix and returns are a numpy array or Nx1 matrix
+    """
     return weights.T @ returns
 
-def portfolio_vol(weights, covmat):
-    '''
-    Weights -> Vol
-    '''
-    return (weights.T @ covmat @ weights)**0.5
 
-def plot_ef2(n_points, er, cov, style='.-'):
-    '''
+def portfolio_vol(weights, covmat):
+    """
+    Computes the vol of a portfolio from a covariance matrix and constituent weights
+    weights are a numpy array or N x 1 maxtrix and covmat is an N x N matrix
+    """
+    vol = (weights.T @ covmat @ weights)**0.5
+    return vol 
+
+
+def plot_ef2(n_points, er, cov):
+    """
     Plots the 2-asset efficient frontier
-    '''
-    if er.shape[0] != 2:
-        raise ValueError('plot_ef2 can only plot 2-asset frontier')
+    """
+    if er.shape[0] != 2 or er.shape[0] != 2:
+        raise ValueError("plot_ef2 can only plot 2-asset frontiers")
     weights = [np.array([w, 1-w]) for w in np.linspace(0, 1, n_points)]
     rets = [portfolio_return(w, er) for w in weights]
     vols = [portfolio_vol(w, cov) for w in weights]
     ef = pd.DataFrame({
-        'Returns': rets, 
-        'Volatility': vols
-        })
-    return ef.plot.line(x='Volatility', y='Returns', style=style)
+        "Returns": rets, 
+        "Volatility": vols
+    })
+    return ef.plot.line(x="Volatility", y="Returns", style=".-")
 
 def minimize_vol(target_return, er, cov):
-    '''
-    target returns -> weight vector
-    '''
+    """
+    Returns the optimal weights that achieve the target return
+    given a set of expected returns and a covariance matrix
+    """
     n = er.shape[0]
     init_guess = np.repeat(1/n, n)
-    # set the bounds
-    bounds = ((0.0, 1.0),)*n # make n copies of tuples (0.0, 1.0)
-    # set the constraints
-    return_is_target = {
-        'type': 'eq',
-        'args': (er,),
-        'fun': lambda weights, er: target_return - portfolio_return(weights, er)
+    bounds = ((0.0, 1.0),) * n # an N-tuple of 2-tuples!
+    # construct the constraints
+    weights_sum_to_1 = {'type': 'eq',
+                        'fun': lambda weights: np.sum(weights) - 1
     }
-    weights_sum_to_1 = {
-        'type': 'eq',
-        'fun': lambda weights: np.sum(weights) - 1
+    return_is_target = {'type': 'eq',
+                        'args': (er,),
+                        'fun': lambda weights, er: target_return - portfolio_return(weights,er)
     }
-    results = minimize(portfolio_vol, init_guess,
+    weights = minimize(portfolio_vol, init_guess,
                        args=(cov,), method='SLSQP',
                        options={'disp': False},
-                       constraints=(return_is_target, weights_sum_to_1),
-                       bounds=bounds
-                      )
-    return results.x
+                       constraints=(weights_sum_to_1,return_is_target),
+                       bounds=bounds)
+    return weights.x
+
+
+def tracking_error(r_a, r_b):
+    """
+    Returns the Tracking Error between the two return series
+    """
+    return np.sqrt(((r_a - r_b)**2).sum())
+
+                         
+def msr(riskfree_rate, er, cov):
+    """
+    Returns the weights of the portfolio that gives you the maximum sharpe ratio
+    given the riskfree rate and expected returns and a covariance matrix
+    """
+    n = er.shape[0]
+    init_guess = np.repeat(1/n, n)
+    bounds = ((0.0, 1.0),) * n # an N-tuple of 2-tuples!
+    # construct the constraints
+    weights_sum_to_1 = {'type': 'eq',
+                        'fun': lambda weights: np.sum(weights) - 1
+    }
+    def neg_sharpe(weights, riskfree_rate, er, cov):
+        """
+        Returns the negative of the sharpe ratio
+        of the given portfolio
+        """
+        r = portfolio_return(weights, er)
+        vol = portfolio_vol(weights, cov)
+        return -(r - riskfree_rate)/vol
+    
+    weights = minimize(neg_sharpe, init_guess,
+                       args=(riskfree_rate, er, cov), method='SLSQP',
+                       options={'disp': False},
+                       constraints=(weights_sum_to_1,),
+                       bounds=bounds)
+    return weights.x
+
+
+def gmv(cov):
+    """
+    Returns the weights of the Global Minimum Volatility portfolio
+    given a covariance matrix
+    """
+    n = cov.shape[0]
+    return msr(0, np.repeat(1, n), cov)
+
 
 def optimal_weights(n_points, er, cov):
-    '''
-    Generates list of weights to run the optimizer on to minimize the vol
-    '''
+    """
+    Returns a list of weights that represent a grid of n_points on the efficient frontier
+    """
     target_rs = np.linspace(er.min(), er.max(), n_points)
     weights = [minimize_vol(target_return, er, cov) for target_return in target_rs]
     return weights
-   
-def msr(riskfree_rate, er, cov):
-    '''
-    Returns the weights of the portfolio that gives you the maximum sharpe ratio
-    given the riskfree rate, expected returns and a covariance matrix
-    '''
-    n = er.shape[0]
-    init_guess = np.repeat(1/n, n)
-    # set the bounds
-    bounds = ((0.0, 1.0),)*n # make n copies of tuples (0.0, 1.0)
-    # set the constraints
-    weights_sum_to_1 = {
-        'type': 'eq',
-        'fun': lambda weights: np.sum(weights) - 1
-    }
-    
-    def neg_sharpe_ratio(weights, riskfree_rate, er, cov):
-        '''
-        Returns the negative of the sharpe ratio, given weights
-        '''
-        r = portfolio_return(weights, er)
-        vol = portfolio_vol(weights, cov)
-        return -(r - riskfree_rate) / vol
-        
-    results = minimize(neg_sharpe_ratio, init_guess,
-                       args=(riskfree_rate, er, cov,), method='SLSQP',
-                       options={'disp': False},
-                       constraints=(weights_sum_to_1),
-                       bounds=bounds
-                      )
-    return results.x
 
-def gmv(cov):
-    '''
-    Returns the weights of the Global Minimum Volatility portfolios
-    given the covariance matrix
-    '''
-    n = cov.shape[0]
-    return msr(0.1, np.repeat(1, n), cov)
-    '''
-    Because to calculate the GMV, neither the riskfree rate nor the expected returns are required,
-    therefore we just put some placeholder numbers in there. In fact, it's only the covariance matrix that matters.
-    '''
 
-def plot_ef(n_points, er, cov, show_cml=False, style='.-', riskfree_rate=0, show_ew=False, show_gmv=False):
-    '''
+def plot_ef(n_points, er, cov, style='.-', legend=False, show_cml=False, riskfree_rate=0, show_ew=False, show_gmv=False):
+    """
     Plots the multi-asset efficient frontier
-    '''
+    """
     weights = optimal_weights(n_points, er, cov)
     rets = [portfolio_return(w, er) for w in weights]
     vols = [portfolio_vol(w, cov) for w in weights]
     ef = pd.DataFrame({
-        'Returns': rets, 
-        'Volatility': vols
-        })
-    ax = ef.plot.line(x='Volatility', y='Returns', style=style)
-    if show_ew: # plot the equally weighted portfolios
+        "Returns": rets, 
+        "Volatility": vols
+    })
+    ax = ef.plot.line(x="Volatility", y="Returns", style=style, legend=legend)
+    if show_cml:
+        ax.set_xlim(left = 0)
+        # get MSR
+        w_msr = msr(riskfree_rate, er, cov)
+        r_msr = portfolio_return(w_msr, er)
+        vol_msr = portfolio_vol(w_msr, cov)
+        # add CML
+        cml_x = [0, vol_msr]
+        cml_y = [riskfree_rate, r_msr]
+        ax.plot(cml_x, cml_y, color='green', marker='o', linestyle='dashed', linewidth=2, markersize=10)
+    if show_ew:
         n = er.shape[0]
         w_ew = np.repeat(1/n, n)
         r_ew = portfolio_return(w_ew, er)
         vol_ew = portfolio_vol(w_ew, cov)
-        # display Equally Weighted portfolios
+        # add EW
         ax.plot([vol_ew], [r_ew], color='goldenrod', marker='o', markersize=10)
-    if show_gmv: # plot the 
+    if show_gmv:
         w_gmv = gmv(cov)
         r_gmv = portfolio_return(w_gmv, er)
         vol_gmv = portfolio_vol(w_gmv, cov)
-        # display Equally Weighted portfolios
+        # add EW
         ax.plot([vol_gmv], [r_gmv], color='midnightblue', marker='o', markersize=10)
-    if show_cml:
-        ax.set_xlim(left = 0)
-        w_msr = msr(riskfree_rate, er, cov)
-        r_msr = portfolio_return(w_msr, er)
-        vol_msr = portfolio_vol(w_msr, cov)
-        # Add Capital Market Line
-        cml_x = [0, vol_msr]
-        cml_y = [riskfree_rate, r_msr]
-        ax.plot(cml_x, cml_y, color='green', marker='o', linestyle='dashed', markersize=12, linewidth=2)
-    return ax
+        
+        return ax
 
+                         
 def run_cppi(risky_r, safe_r=None, m=3, start=1000, floor=0.8, riskfree_rate=0.03, drawdown=None):
-    '''
+    """
     Run a backtest of the CPPI strategy, given a set of returns for the risky asset
     Returns a dictionary containing: Asset Value History, Risk Budget History, Risky Weight History
-    '''
+    """
     # set up the CPPI parameters
     dates = risky_r.index
     n_steps = len(dates)
     account_value = start
     floor_value = start*floor
-    peak = start
-    
-    if isinstance(risky_r, pd.Series):
-        risky_r = pd.DataFrame(risky_r, columns=['R'])
-        
+    peak = account_value
+    if isinstance(risky_r, pd.Series): 
+        risky_r = pd.DataFrame(risky_r, columns=["R"])
+
     if safe_r is None:
         safe_r = pd.DataFrame().reindex_like(risky_r)
         safe_r.values[:] = riskfree_rate/12 # fast way to set all values to a number
     # set up some DataFrames for saving intermediate values
     account_history = pd.DataFrame().reindex_like(risky_r)
-    cushion_history = pd.DataFrame().reindex_like(risky_r)
     risky_w_history = pd.DataFrame().reindex_like(risky_r)
+    cushion_history = pd.DataFrame().reindex_like(risky_r)
+    floorval_history = pd.DataFrame().reindex_like(risky_r)
+    peak_history = pd.DataFrame().reindex_like(risky_r)
 
     for step in range(n_steps):
         if drawdown is not None:
             peak = np.maximum(peak, account_value)
-            floor_value = peak * (1 - drawdown)
+            floor_value = peak*(1-drawdown)
         cushion = (account_value - floor_value)/account_value
-        risky_w = m * cushion
-        '''
-        constrain the risky asset weight between 0 and 1, 
-        so that we don't borrow money for investment (if risky_w > 1)
-        or short sell (if risky_w < 0)
-        '''
+        risky_w = m*cushion
         risky_w = np.minimum(risky_w, 1)
         risky_w = np.maximum(risky_w, 0)
-        safe_w = 1 - risky_w
-        risky_alloc = account_value * risky_w
-        safe_alloc = account_value * safe_w
-        # update the account value at the end of this time step
-        account_value = risky_alloc * (1 + risky_r.iloc[step]) + safe_alloc * (1 + safe_r.iloc[step])
-        # save the values so we can look at the history and plot it
+        safe_w = 1-risky_w
+        risky_alloc = account_value*risky_w
+        safe_alloc = account_value*safe_w
+        # recompute the new account value at the end of this step
+        account_value = risky_alloc*(1+risky_r.iloc[step]) + safe_alloc*(1+safe_r.iloc[step])
+        # save the histories for analysis and plotting
         cushion_history.iloc[step] = cushion
         risky_w_history.iloc[step] = risky_w
         account_history.iloc[step] = account_value
-
-    risky_wealth = start * (1 + risky_r).cumprod()
-    
+        floorval_history.iloc[step] = floor_value
+        peak_history.iloc[step] = peak
+    risky_wealth = start*(1+risky_r).cumprod()
     backtest_result = {
-        'Wealth': account_history,
-        'Risky Wealth': risky_wealth,
-        'Risk Budget': cushion_history,
-        'm': m,
-        'start': start,
-        'floor': floor,
-        'risky_r': risky_r,
-        'safe_r': safe_r
+        "Wealth": account_history,
+        "Risky Wealth": risky_wealth, 
+        "Risk Budget": cushion_history,
+        "Risky Allocation": risky_w_history,
+        "m": m,
+        "start": start,
+        "floor": floor,
+        "risky_r":risky_r,
+        "safe_r": safe_r,
+        "drawdown": drawdown,
+        "peak": peak_history,
+        "floor": floorval_history
     }
     return backtest_result
+
 
 def summary_stats(r, riskfree_rate=0.03):
     """
@@ -447,6 +512,7 @@ def summary_stats(r, riskfree_rate=0.03):
         "Max Drawdown": dd
     })
 
+                         
 def gbm(n_years = 10, n_scenarios=1000, mu=0.07, sigma=0.15, steps_per_year=12, s_0=100.0, prices=True):
     """
     Evolution of Geometric Brownian Motion trajectories, such as for Stock Prices through Monte Carlo
@@ -469,132 +535,195 @@ def gbm(n_years = 10, n_scenarios=1000, mu=0.07, sigma=0.15, steps_per_year=12, 
     ret_val = s_0*pd.DataFrame(rets_plus_1).cumprod() if prices else rets_plus_1-1
     return ret_val
 
-def discount(t, r):
-    '''
-    Compute the price of a pure discount bond that pays a dollar at time t, given interest rate r
-    '''
-    return (1+r)**(-t)
-
-def pv(l, r):
-    '''
-    Compute the present value of a sequence of liabilities
-    l is indexed by the time , and the value are the amounts of each liability
-    returns the present value of the sequence
-    '''
-    dates = l.index
-    discounts = discount(dates, r)
-    return (discounts*l).sum()
-
-def funding_ratio(assets, liabilities, r):
-    '''
-    Computes the funding ratio of some assets given liabilities and interest rate
-    '''
-    return pv(assets, r) / pv(liabilities, r)
-
-def inst_to_ann(r):
+                         
+import statsmodels.api as sm
+def regress(dependent_variable, explanatory_variables, alpha=True):
     """
-    Convert an instantaneous interest rate to an annual interest rate
+    Runs a linear regression to decompose the dependent variable into the explanatory variables
+    returns an object of type statsmodel's RegressionResults on which you can call
+       .summary() to print a full summary
+       .params for the coefficients
+       .tvalues and .pvalues for the significance levels
+       .rsquared_adj and .rsquared for quality of fit
     """
-    return np.expm1(r)
-    # np.expm1(r) is the same as np.exp(r)-1
-
-def ann_to_inst(r):
-    """
-    Convert an instantaneous interest rate to an annual interest rate
-    """
-    return np.log1p(r)
-    # np.log1p(r) is the same as np.log(1+r)
-
-def cir(n_years = 10, n_scenarios=1, a=0.05, b=0.03, sigma=0.05, steps_per_year=12, r_0=None):
-    """
-    Generate random interest rate evolution over time using the CIR model
-    b and r_0 are assumed to be the annualized rates, not the short rate
-    and the returned values are the annualized rates as well
-    """
-    if r_0 is None: r_0 = b 
-    r_0 = ann_to_inst(r_0)
-    dt = 1/steps_per_year
-    num_steps = int(n_years*steps_per_year) + 1 # because n_years might be a float
+    if alpha:
+        explanatory_variables = explanatory_variables.copy()
+        explanatory_variables["Alpha"] = 1
     
-    shock = np.random.normal(0, scale=np.sqrt(dt), size=(num_steps, n_scenarios))
-    rates = np.empty_like(shock)
-    rates[0] = r_0
+    lm = sm.OLS(dependent_variable, explanatory_variables).fit()
+    return lm
 
-    ## For Price Generation
-    h = math.sqrt(a**2 + 2*sigma**2)
-    prices = np.empty_like(shock)
-    ####
+def portfolio_tracking_error(weights, ref_r, bb_r):
+    """
+    returns the tracking error between the reference returns
+    and a portfolio of building block returns held with given weights
+    """
+    return tracking_error(ref_r, (weights*bb_r).sum(axis=1))
+                         
+def style_analysis(dependent_variable, explanatory_variables):
+    """
+    Returns the optimal weights that minimizes the Tracking error between
+    a portfolio of the explanatory variables and the dependent variable
+    """
+    n = explanatory_variables.shape[1]
+    init_guess = np.repeat(1/n, n)
+    bounds = ((0.0, 1.0),) * n # an N-tuple of 2-tuples!
+    # construct the constraints
+    weights_sum_to_1 = {'type': 'eq',
+                        'fun': lambda weights: np.sum(weights) - 1
+    }
+    solution = minimize(portfolio_tracking_error, init_guess,
+                       args=(dependent_variable, explanatory_variables,), method='SLSQP',
+                       options={'disp': False},
+                       constraints=(weights_sum_to_1,),
+                       bounds=bounds)
+    weights = pd.Series(solution.x, index=explanatory_variables.columns)
+    return weights
 
-    def price(ttm, r):
-        _A = ((2*h*math.exp((h+a)*ttm/2))/(2*h+(h+a)*(math.exp(h*ttm)-1)))**(2*a*b/sigma**2)
-        _B = (2*(math.exp(h*ttm)-1))/(2*h + (h+a)*(math.exp(h*ttm)-1))
-        _P = _A*np.exp(-_B*r)
-        return _P
-    prices[0] = price(n_years, r_0)
-    ####
+
+def ff_analysis(r, factors):
+    """
+    Returns the loadings  of r on the Fama French Factors
+    which can be read in using get_fff_returns()
+    the index of r must be a (not necessarily proper) subset of the index of factors
+    r is either a Series or a DataFrame
+    """
+    if isinstance(r, pd.Series):
+        dependent_variable = r
+        explanatory_variables = factors.loc[r.index]
+        tilts = regress(dependent_variable, explanatory_variables).params
+    elif isinstance(r, pd.DataFrame):
+        tilts = pd.DataFrame({col: ff_analysis(r[col], factors) for col in r.columns})
+    else:
+        raise TypeError("r must be a Series or a DataFrame")
+    return tilts
+
+def weight_ew(r, cap_weights=None, max_cw_mult=None, microcap_threshold=None, **kwargs):
+    """
+    Returns the weights of the EW portfolio based on the asset returns "r" as a DataFrame
+    If supplied a set of capweights and a capweight tether, it is applied and reweighted 
+    """
+    n = len(r.columns)
+    ew = pd.Series(1/n, index=r.columns)
+    if cap_weights is not None:
+        cw = cap_weights.loc[r.index[0]] # starting cap weight
+        ## exclude microcaps
+        if microcap_threshold is not None and microcap_threshold > 0:
+            microcap = cw < microcap_threshold
+            ew[microcap] = 0
+            ew = ew/ew.sum()
+        #limit weight to a multiple of capweight
+        if max_cw_mult is not None and max_cw_mult > 0:
+            ew = np.minimum(ew, cw*max_cw_mult)
+            ew = ew/ew.sum() #reweight
+    return ew
+
+def weight_cw(r, cap_weights, **kwargs):
+    """
+    Returns the weights of the CW portfolio based on the time series of capweights
+    """
+    w = cap_weights.loc[r.index[1]]
+    return w/w.sum()
+
+def backtest_ws(r, estimation_window=60, weighting=weight_ew, verbose=False, **kwargs):
+    """
+    Backtests a given weighting scheme, given some parameters:
+    r : asset returns to use to build the portfolio
+    estimation_window: the window to use to estimate parameters
+    weighting: the weighting scheme to use, must be a function that takes "r", and a variable number of keyword-value arguments
+    """
+    n_periods = r.shape[0]
+    # return windows
+    windows = [(start, start+estimation_window) for start in range(n_periods-estimation_window)]
+    weights = [weighting(r.iloc[win[0]:win[1]], **kwargs) for win in windows]
+    # convert List of weights to DataFrame
+    weights = pd.DataFrame(weights, index=r.iloc[estimation_window:].index, columns=r.columns)
+    returns = (weights * r).sum(axis="columns",  min_count=1) #mincount is to generate NAs if all inputs are NAs
+    return returns
+
+def sample_cov(r, **kwargs):
+    """
+    Returns the sample covariance of the supplied returns
+    """
+    return r.cov()
+
+def weight_gmv(r, cov_estimator=sample_cov, **kwargs):
+    """
+    Produces the weights of the GMV portfolio given a covariance matrix of the returns 
+    """
+    est_cov = cov_estimator(r, **kwargs)
+    return gmv(est_cov)
+
+def cc_cov(r, **kwargs):
+    """
+    Estimates a covariance matrix by using the Elton/Gruber Constant Correlation model
+    """
+    rhos = r.corr()
+    n = rhos.shape[0]
+    # this is a symmetric matrix with diagonals all 1 - so the mean correlation is ...
+    rho_bar = (rhos.values.sum()-n)/(n*(n-1))
+    ccor = np.full_like(rhos, rho_bar)
+    np.fill_diagonal(ccor, 1.)
+    sd = r.std()
+    return pd.DataFrame(ccor * np.outer(sd, sd), index=r.columns, columns=r.columns)
+
+def shrinkage_cov(r, delta=0.5, **kwargs):
+    """
+    Covariance estimator that shrinks between the Sample Covariance and the Constant Correlation Estimators
+    """
+    prior = cc_cov(r, **kwargs)
+    sample = sample_cov(r, **kwargs)
+    return delta*prior + (1-delta)*sample
+
+def risk_contribution(w,cov):
+    """
+    Compute the contributions to risk of the constituents of a portfolio, given a set of portfolio weights and a covariance matrix
+    """
+    total_portfolio_var = portfolio_vol(w,cov)**2
+    # Marginal contribution of each constituent
+    marginal_contrib = cov@w
+    risk_contrib = np.multiply(marginal_contrib,w.T)/total_portfolio_var
+    return risk_contrib
+
+def target_risk_contributions(target_risk, cov):
+    """
+    Returns the weights of the portfolio that gives you the weights such
+    that the contributions to portfolio risk are as close as possible to
+    the target_risk, given the covariance matrix
+    """
+    n = cov.shape[0]
+    init_guess = np.repeat(1/n, n)
+    bounds = ((0.0, 1.0),) * n # an N-tuple of 2-tuples!
+    # construct the constraints
+    weights_sum_to_1 = {'type': 'eq',
+                        'fun': lambda weights: np.sum(weights) - 1
+    }
+    def msd_risk(weights, target_risk, cov):
+        """
+        Returns the Mean Squared Difference in risk contributions
+        between weights and target_risk
+        """
+        w_contribs = risk_contribution(weights, cov)
+        return ((w_contribs-target_risk)**2).sum()
     
-    for step in range(1, num_steps):
-        r_t = rates[step-1]
-        d_r_t = a*(b-r_t)*dt + sigma*np.sqrt(r_t)*shock[step]
-        rates[step] = abs(r_t + d_r_t)
-        # generate prices at time t as well ...
-        prices[step] = price(n_years-step*dt, rates[step])
+    weights = minimize(msd_risk, init_guess,
+                       args=(target_risk, cov), method='SLSQP',
+                       options={'disp': False},
+                       constraints=(weights_sum_to_1,),
+                       bounds=bounds)
+    return weights.x
 
-    rates = pd.DataFrame(data=inst_to_ann(rates), index=range(num_steps))
-    ### for prices
-    prices = pd.DataFrame(data=prices, index=range(num_steps))
-    ###
-    return rates, prices
+def equal_risk_contributions(cov):
+    """
+    Returns the weights of the portfolio that equalizes the contributions
+    of the constituents based on the given covariance matrix
+    """
+    n = cov.shape[0]
+    return target_risk_contributions(target_risk=np.repeat(1/n,n), cov=cov)
 
-def bond_cash_flows(maturity, principal=100, coupon_rate=0.03, coupons_per_year=12):
+def weight_erc(r, cov_estimator=sample_cov, **kwargs):
     """
-    Returns the series of cash flows generated by a bond,
-    indexed by the payment/coupon number
+    Produces the weights of the ERC portfolio given a covariance matrix of the returns 
     """
-    n_coupons = round(maturity*coupons_per_year)
-    coupon_amt = principal*coupon_rate/coupons_per_year
-    coupons = np.repeat(coupon_amt, n_coupons)
-    coupon_times = np.arange(1, n_coupons+1)
-    cash_flows = pd.Series(data=coupon_amt, index=coupon_times)
-    cash_flows.iloc[-1] += principal
-    return cash_flows
-
-def bond_price(maturity, principal=100, coupon_rate=0.03, coupons_per_year=12, discount_rate=0.03):
-    """
-    Computes the price of a bond that pays regular coupons until maturity
-    at which time the principal and the final coupon is returned
-    This is not designed to be efficient, rather,
-    it is to illustrate the underlying principle behind bond pricing!
-    If discount_rate is a DataFrame, then this is assumed to be the rate on each coupon date
-    and the bond value is computed over time.
-    i.e. The index of the discount_rate DataFrame is assumed to be the coupon number
-    """
-    if isinstance(discount_rate, pd.DataFrame):
-        pricing_dates = discount_rate.index
-        prices = pd.DataFrame(index=pricing_dates, columns=discount_rate.columns)
-        for t in pricing_dates:
-            prices.loc[t] = bond_price(maturity-t/coupons_per_year, principal, coupon_rate, coupons_per_year,
-                                      discount_rate.loc[t])
-        return prices
-    else: # base case ... single time period
-        if maturity <= 0: return principal+principal*coupon_rate/coupons_per_year
-        cash_flows = bond_cash_flows(maturity, principal, coupon_rate, coupons_per_year)
-        return pv(cash_flows, discount_rate/coupons_per_year)
-    
-def macaulay_duration(flows, discount_rate):
-    '''
-    Computes the Macaulay Duration of a sequence of cash flows
-    '''
-    discounted_flows = discount(flows.index, discount_rate)*flows
-    weights = discounted_flows / discounted_flows.sum()
-    return np.average(flows.index, weights=weights)
-
-def match_durations(cf_t, cf_s, cf_l, discount_rate):
-    """
-    Returns the weight W in cf_s that, along with (1-W) in cf_l will have an effective
-    duration that matches cf_t
-    """
-    d_t = macaulay_duration(cf_t, discount_rate)
-    d_s = macaulay_duration(cf_s, discount_rate)
-    d_l = macaulay_duration(cf_l, discount_rate)
-    return (d_l - d_t)/(d_l - d_s)
+    est_cov = cov_estimator(r, **kwargs)
+    return equal_risk_contributions(est_cov)
