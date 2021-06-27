@@ -14,19 +14,44 @@ def get_mf_values(m_funds, indicator="累计净值走势"):
     '''
     m_fund_values = pd.DataFrame()
     for m_fund in m_funds:
+        try:
+            # get a single mutual fund value
+            m_fund_value = ak.fund_em_open_fund_info(m_fund, indicator)            
+            m_fund_value = m_fund_value.set_index(pd.DatetimeIndex(m_fund_value['净值日期']))
+            # drop the original column "净值日期"
+            m_fund_value = m_fund_value.drop(m_fund_value.columns[[0]], axis = 1)
+            m_fund_value['累计净值'] = m_fund_value['累计净值'].astype('float')
+            m_fund_value.rename(columns={'累计净值': m_fund}, inplace=True)
+
+            # merge the single mutual fund value into the existing value Dataframe
+            m_fund_values = pd.concat([m_fund_values, m_fund_value], axis=1)
+        except:
+            print('fail to retrieve data for ', m_fund)
+        
+    return m_fund_values
+
+def get_currency_fund_values(m_funds):
+    '''
+    Load and format the list of Currency fund values from Akshare
+    Return a Dataframe with each column being the value time series of each mutual fund
+    '''
+    m_fund_values = pd.DataFrame()
+    for m_fund in m_funds:
         # get a single mutual fund value
-        m_fund_value = ak.fund_em_open_fund_info(m_fund, indicator)
-        m_fund_value.reset_index(drop=True, inplace=False).set_index('净值日期')
-        m_fund_value.index = pd.to_datetime(m_fund_value['净值日期'], format="%Y-%m-%d")
+        m_fund_value = ak.fund_em_money_fund_info(m_fund)
+        m_fund_value = m_fund_value.set_index(pd.DatetimeIndex(m_fund_value['净值日期']))
         # drop the original column "净值日期"
         m_fund_value = m_fund_value.drop(m_fund_value.columns[[0]], axis = 1)
-        m_fund_value.rename(columns={'累计净值': m_fund}, inplace=True)
-        
+        m_fund_value['每万份收益'] = m_fund_value['每万份收益'].astype('float')
+        m_fund_value.rename(columns={'每万份收益': m_fund}, inplace=True)
+        # drop unused columns
+        m_fund_value = m_fund_value.drop(m_fund_value.columns[[-1, -2, -3]], axis = 1)
+
         # merge the single mutual fund value into the existing value Dataframe
         m_fund_values = pd.concat([m_fund_values, m_fund_value], axis=1)
         
     return m_fund_values
-    
+
 def get_ffme_returns():
     """
     Load the Fama-French Dataset for the returns of the Top and Bottom Deciles by MarketCap
@@ -66,13 +91,13 @@ def get_ind_file(filetype, weighting="vw", n_inds=30):
         weighting is one of "ew", "vw"
         number of inds is 30 or 49
     """    
-    if filetype is "returns":
+    if filetype == "returns":
         name = f"{weighting}_rets" 
         divisor = 100
-    elif filetype is "nfirms":
+    elif filetype == "nfirms":
         name = "nfirms"
         divisor = 1
-    elif filetype is "size":
+    elif filetype == "size":
         name = "size"
         divisor = 1
     else:
